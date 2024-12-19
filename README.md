@@ -6,6 +6,10 @@
 
 # spqr
 
+![GitHub repo size](https://img.shields.io/github/repo-size/AntonioBerna/spqr)
+![GitHub License](https://img.shields.io/github/license/AntonioBerna/spqr)
+![GitHub Created At](https://img.shields.io/github/created-at/antonioberna/spqr)
+
 ## Introduction
 
 The aim of the project is to design and implement in C language using the Berkeley Socket API a client-server application for file transfer that uses the connectionless network service (socket type `SOCK_DGRAM`, i.e. UDP as transport layer protocol). The software must allow:
