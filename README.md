@@ -1,8 +1,10 @@
-# Selective Protocol for Quality and Reliability
-
 <p align="center">
-    <img src="assets/imgs/spqr-logo.jpg" width="450">
+    <img src=".github/assets/imgs/spqr-logo-no-bg.png" alt="SPQR" width="400">
+    <br>
+    <strong>Selective Protocol for Quality and Reliability</strong>
 </p>
+
+# spqr
 
 ## Introduction
 
