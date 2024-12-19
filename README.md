@@ -1,5 +1,5 @@
 <p align="center">
-    <img src=".github/assets/imgs/spqr-logo-no-bg.png" alt="SPQR" width="400">
+    <img src=".github/imgs/spqr-logo-no-bg.png" alt="SPQR" width="400">
     <br>
     <strong>Selective Protocol for Quality and Reliability</strong>
 </p>
