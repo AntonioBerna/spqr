@@ -6,6 +6,7 @@
 
 # spqr
 
+[![Netlify Status](https://api.netlify.com/api/v1/badges/ff209ec3-5e28-44b3-9e99-f5274f7e0b29/deploy-status)](https://app.netlify.com/sites/spqr/deploys)
 ![GitHub repo size](https://img.shields.io/github/repo-size/AntonioBerna/spqr)
 ![GitHub License](https://img.shields.io/github/license/AntonioBerna/spqr)
 ![GitHub Created At](https://img.shields.io/github/created-at/antonioberna/spqr)
