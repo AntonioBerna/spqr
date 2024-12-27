@@ -42,8 +42,6 @@
 #include <unistd.h>
 
 // * Custom headers * //
-#include "ascii.h"
-#include "common.h"
-#include "messages.h"
 #include "settings.h"
+#include "common.h"
 #include "protocol.h"
