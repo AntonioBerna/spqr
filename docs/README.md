@@ -1,5 +1,8 @@
 # HTTP Firewall
 
+> [!WARNING]
+> Your browser may be storing the cache of the website, so you need to reload the page completely. You can do this by using the key combination `Shift + F5`.
+
 ## Start http server
 
 To test the website in mobile mode (and therefore test if it is responsive), in a Linux environment we can pull up an http server in Python using the following command:
