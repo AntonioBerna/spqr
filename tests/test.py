@@ -1,7 +1,7 @@
 import hashlib
 import os
 
-def hash_file(file_path, buffer_size=65536, hash_algorithm='sha256'):
+def hash_file(file_path, buffer_size=65536, hash_algorithm="sha256"):
     """Calculates the hash of a file given its path."""
     hasher = hashlib.new(hash_algorithm)
     with open(file_path, "rb") as file:
@@ -13,7 +13,7 @@ def hash_file(file_path, buffer_size=65536, hash_algorithm='sha256'):
 
 def compare_files_binary(first_file, second_file, buffer_size=65536):
     """Compares two files byte by byte to check for equality."""
-    with open(first_file, 'rb') as f1, open(second_file, 'rb') as f2:
+    with open(first_file, "rb") as f1, open(second_file, "rb") as f2:
         while True:
             chunk1 = f1.read(buffer_size)
             chunk2 = f2.read(buffer_size)
