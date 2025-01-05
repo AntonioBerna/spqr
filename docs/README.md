@@ -44,7 +44,7 @@ So on Linux, you need to run the `ifconfig` command selecting the network card's
 So we can go to the link on the phone:
 
 ```
-http://<your-ip-adress>:6969
+http://<your-ip-address>:6969
 ```
 
 > [!NOTE]
@@ -81,5 +81,5 @@ sudo python http_firewall.py
 > [!CAUTION]
 > I remind you that to view the website via mobile, you need to visit the following link:
 > ```
-> http://<your-ip-adress>:6969
+> http://<your-ip-address>:6969
 > ```
