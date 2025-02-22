@@ -36,7 +36,7 @@ The concurrent server must provide the following features:
 
 ## Client Features
 
-The client must provide the following features:
+The concurrent client must provide the following features:
 
 - sending the `LIST` message to request a list of available filenames;
 - sending the `GET` message to get a file;
