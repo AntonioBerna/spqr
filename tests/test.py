@@ -40,9 +40,9 @@ def analyze_directories(client, server):
         second_file = files_server[file]
 
         if compare_files(first_file, second_file):
-            print(f"The files \"{file}\" inside \"{client}\" and \"{server}\" are the same.")
+            print(f"\033[32mThe files \"{file}\" inside \"{client}\" and \"{server}\" are the same.\033[0m")
         else:
-            print(f"The files \"{file}\" inside \"{client}\" and \"{server}\" have the same name but different content.")
+            print(f"\033[31mThe files \"{file}\" inside \"{client}\" and \"{server}\" have the same name but different content.\033[0m")
 
     unique_in_client = set(files_client.keys()) - common_files
     unique_in_server = set(files_server.keys()) - common_files
@@ -53,6 +53,6 @@ def analyze_directories(client, server):
         print(f"\nThe unique files in \"{server}\" are:\n{chr(10).join(unique_in_server)}")
 
 if __name__ == "__main__":
-    client = "../client-files/"
-    server = "../server-files/"
+    client = "./client-files/"
+    server = "./server-files/"
     analyze_directories(client, server)
