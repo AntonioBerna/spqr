@@ -3,6 +3,11 @@
 // * Networking libraries * //
 #include <arpa/inet.h>
 
+// ? In the Apple's implementation of the socket library, the `MSG_CONFIRM` flag is not defined.
+#ifndef MSG_CONFIRM
+#define MSG_CONFIRM 0
+#endif
+
 // * Error handling and standard I/O * //
 #include <errno.h>
 #include <stdbool.h>
