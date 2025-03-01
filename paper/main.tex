@@ -1,0 +1,137 @@
+\documentclass[a4paper,12pt]{report}  % Document type, paper size, and font size
+
+\usepackage[italian]{babel}  % Set language to italian
+
+\usepackage[utf8]{inputenc}  % Character encoding
+\usepackage[T1]{fontenc}
+\usepackage{amsmath}         % Package for mathematics
+\usepackage{amsfonts}        % Package for math fonts
+\usepackage{amssymb}         % Package for math symbols
+\usepackage{graphicx}        % Package for inserting images
+\usepackage{geometry}        % Package to manage page margins
+\usepackage{fontspec}        % Package for custom fonts
+\usepackage{hyperref}        % Package for hyperlinks
+\usepackage{xcolor}          % Package for colors
+\usepackage{listings}        % Package for code listings
+\usepackage{tcolorbox}
+\usepackage{emoji}
+\usepackage{multirow}
+\usepackage{siunitx}
+\usepackage{colortbl}
+\usepackage{booktabs}
+\usepackage{animate}
+
+\geometry{top=2.5cm, bottom=2.5cm, left=2.5cm, right=2.5cm}  % Set page margins
+
+\setlength{\parindent}{0pt}
+
+\definecolor{headercolor}{RGB}{230, 230, 250}
+\definecolor{rowcolor1}{RGB}{245, 245, 255}
+\definecolor{rowcolor2}{RGB}{255, 255, 255}
+
+% Definizione colori moderni
+\definecolor{backcolour}{RGB}{248, 248, 248}     % Sfondo leggermente grigio
+\definecolor{codegreen}{RGB}{72, 168, 96}        % Verde più soft per i commenti
+\definecolor{codepurple}{RGB}{156, 39, 176}      % Viola più moderno
+\definecolor{codered}{RGB}{219, 68, 55}          % Rosso Google-style
+\definecolor{codeblue}{RGB}{66, 133, 244}        % Blu Google-style
+\definecolor{codeorange}{RGB}{255, 111, 0}       % Arancione vivace
+\definecolor{numbercolor}{RGB}{102, 102, 102}    % Grigio per i numeri di riga
+\definecolor{definecolor}{RGB}{255, 128, 0}
+
+\lstdefinestyle{mystyle}{
+    backgroundcolor=\color{backcolour},
+    commentstyle=\color{codegreen},
+    keywordstyle=\color{codepurple},
+    stringstyle=\color{codered},
+    basicstyle=\fontspec{JetBrains Mono}\scriptsize,
+    numberstyle=\fontspec{JetBrains Mono}\scriptsize\color{numbercolor},
+    breakatwhitespace=false,
+    breaklines=true,
+    captionpos=b,
+    keepspaces=true,
+    numbers=left,
+    numbersep=8pt,
+    showspaces=false,
+    showstringspaces=false,
+    showtabs=true,
+    tabsize=4,
+    frame=single,
+    rulecolor=\color{backcolour!70},
+    xleftmargin=2.5em,
+    framexleftmargin=2em,
+    literate=
+        {*}{{*}}1
+        {\#}{{\textcolor{codepurple}{\#}}}1
+}
+
+\lstdefinestyle{bash}{
+    backgroundcolor=\color{backcolour},
+    commentstyle=\color{codegreen},
+    keywordstyle=\color{codepurple},
+    stringstyle=\color{codered},
+    basicstyle=\fontspec{JetBrains Mono}\scriptsize,
+    numberstyle=\fontspec{JetBrains Mono}\scriptsize\color{numbercolor},
+    breakatwhitespace=false,
+    breaklines=true,
+    captionpos=b,
+    keepspaces=true,
+    numbers=left,
+    numbersep=8pt,
+    showspaces=false,
+    showstringspaces=false,
+    showtabs=true,
+    tabsize=4,
+    frame=single,
+    rulecolor=\color{backcolour!70},
+    xleftmargin=2.5em,
+    framexleftmargin=2em,
+    literate=
+        {*}{{*}}1
+}
+
+% Apply the style
+\lstset{style=mystyle}
+
+% New command for inline code with background color
+\newcommand{\lstinlinebg}[1]{\colorbox{backcolour}{\lstinline|#1|}}
+
+% New command for inline code in italics with background color
+\newcommand{\lstinlinebgit}[1]{\colorbox{backcolour}{\textit{\lstinline|#1|}}}
+
+% New command for inline code in bold with background color
+\newcommand{\lstinlinebgbf}[1]{\colorbox{backcolour}{\textbf{\lstinline|#1|}}}
+
+% New command for inline code with big text
+\newcommand{\lstinlinebig}[1]{\colorbox{backcolour}{\lstinline[basicstyle=\fontspec{JetBrains Mono}\normalsize]|#1|}}
+
+% Set hyperlink color and background color for the table of contents
+\hypersetup{
+    colorlinks=true,           % Enable color links
+    linkcolor=blue,            % Link color
+    filecolor=magenta,         % Link to files color
+    urlcolor=blue,             % URL color
+    pdfcreator={LaTeX},        % PDF creator
+    pdfproducer={LaTeX},       % PDF producer
+}
+
+\title{Progetto di Ingegneria di Internet e Web: Trasferimento file su UDP}            % Title of the document
+\author{Antonio Bernardini e Flavio Caporilli} % Author's name
+\date{}               % Date (optional)
+
+\begin{document}
+
+% First page with title, author, and date
+\maketitle  
+
+\newpage  % Start a new page for Table of Contents
+
+% Second page with Table of Contents
+\tableofcontents
+
+\include{01 - Architettura del sistema e scelte progettuali}
+\include{02 - Descrizione dell'implementazione}
+\include{03 - Manuale per l'uso}
+\include{04 - Valutazione delle prestazioni}
+
+\end{document}

@@ -1,0 +1,1021 @@
+\chapter{Descrizione dell'implementazione}
+
+In questo capitolo saranno illustrate nel dettaglio le scelte progettuali, con particolare enfasi sull'implementazione, e le soluzioni tecniche adottate nello sviluppo del software S.P.Q.R. (\textit{Selective Protocol for Quality and Reliability}).
+Attraverso un'analisi strutturata, verranno presentati i componenti fondamentali del sistema, con particolare attenzione agli aspetti critici che ne garantiscono l'efficienza e l'affidabilità.
+Infine saranno analizzate le limitazioni riscontrate durante lo sviluppo.
+
+% Three-Way Handshake:
+% - client_open_connection_with_server (Three way handshake apertura)
+% - client_close_connection_with_server (Three way handshake chiusura)
+% - server_open_connection_with_client (Three way handshake apertura)
+% - server_close_connection_with_client (Three way handshake chiusura)
+% - send_packet / receive_packet
+
+% SELECTIVE REPEAT:
+% - init_packet_loss_simulator
+% - can_send_packet
+% - receive_data_from_sender
+% - main_receiver
+% - send_data_to_receiver
+% - wait_ack
+% - main_sender
+
+\section{Implementazione del server}
+Il server è il cuore del sistema, responsabile della gestione delle connessioni con i client, dell'elaborazione dei comandi e del trasferimento dei file.
+Di seguito viene riportato il codice sorgente del server attraverso il quale seguirà una spiegazione dettagliata delle funzioni principali.
+
+\begin{lstlisting}[caption={\lstinlinebg{src/server.c}},language=C,escapeinside={(*}{*)},keywords={include, int32_t, void, setup_signal_handling, server_create_socket, load_ascii_art, server_manage_client_connections, PARENT, PORT, puts, return}]
+#include "spqr_server.h"
+
+int32_t main(void) {
+    setup_signal_handling(PARENT);
+    
+    int32_t sockfd = server_create_socket(PORT - 1);
+    
+    load_ascii_art();
+    puts("(*\emoji{globe-with-meridians}*) Server is listening for incoming connections.");
+    
+    return server_manage_client_connections(sockfd);
+}
+\end{lstlisting}
+
+Analizziamo la prima funzione, \lstinlinebg{setup_signal_handling()}, che si occupa di settare i gestori dei segnali per il processo padre del server.
+Si noti che quest'ultima può essere usata anche per il processo figlio, in base al parametro passato.
+
+\begin{lstlisting}[caption={\lstinlinebg{src/spqr_server.c}},language=C,escapeinside={(*}{*)},keywords={sigaction, parent_server_signal_handler, child_server_signal_handler, SIGTERM, sigfillset, sigdelset, sigprocmask, SIG_BLOCK, sizeof, spqr_assert, sigemptyset, if, else, CHILD, NULL, SIGINT, SIGQUIT, struct, sigset_t, memset, signal_handler_t, int32_t, void, server_create_socket, load_ascii_art, server_manage_client_connections, PARENT, PORT, puts, return}]
+void setup_signal_handling(signal_handler_t type) {
+    struct sigaction sa;
+    sigset_t set;
+
+    memset(&sa, 0, sizeof(sa));
+    sa.sa_flags = 0;
+    spqr_assert(sigemptyset(&sa.sa_mask), "sigemptyset");
+
+    if (type == PARENT) {
+        sa.sa_handler = parent_server_signal_handler;
+        spqr_assert(sigaction(SIGINT, &sa, NULL), "sigaction");
+        spqr_assert(sigaction(SIGQUIT, &sa, NULL), "sigaction");
+
+    } else if (type == CHILD) {
+        sa.sa_handler = child_server_signal_handler;
+        spqr_assert(sigaction(SIGTERM, &sa, NULL), "sigaction");
+
+        // ? Block all signals except SIGTERM
+        spqr_assert(sigfillset(&set), "sigfillset");
+        spqr_assert(sigdelset(&set, SIGTERM), "sigdelset");
+    }
+
+    spqr_assert(sigprocmask(SIG_BLOCK, &set, NULL), "sigprocmask");
+}
+\end{lstlisting}
+
+All'interno della funzione \lstinlinebg{setup_signal_handling()} vengono inizializzate le strutture necessarie per la gestione dei segnali, in particolare vengono settati i gestori dei segnali per i segnali \lstinlinebg{SIGINT} e \lstinlinebg{SIGQUIT} nel caso del processo padre, mentre per il processo figlio viene settato il gestore per il segnale \lstinlinebg{SIGTERM}.
+Di seguito sono riportate le implementazioni delle funzioni \lstinlinebg{parent_server_signal_handler()} e \lstinlinebg{child_server_signal_handler()}.
+
+\begin{lstlisting}[caption={\lstinlinebg{src/spqr_server.c}},language=C,escapeinside={(*}{*)},keywords={exit, puts, EXIT_SUCCESS, waitpid, shmdt, shmctl, IPC_RMID, SPQR_CLOSE_CONNECTION, const, sigaction, for, uint32_t, MAX_CLIENTS, INVALID_PID, kill, ifdef, DEBUG, endif, SIGTERM, sigfillset, sigdelset, sigprocmask, SIG_BLOCK, sizeof, spqr_assert, sigemptyset, if, char, MAX_READ_LINE, server_receive_packet, server_close_connection_with_client, close, else, CHILD, NULL, SIGINT, SIGQUIT, struct, sigset_t, memset, signal_handler_t, int32_t, void, server_create_socket, load_ascii_art, server_manage_client_connections, PARENT, PORT, printf, return}]
+void parent_server_signal_handler(const int32_t signo) {
+    if (signo == SIGINT || signo == SIGQUIT) {
+
+    #ifdef DEBUG
+        printf("\n[DEBUG (*\emoji{beetle}*)] Server terminated due to %s.\n", signo == SIGINT ? "SIGINT" : "SIGQUIT");
+    #endif
+
+        for (uint32_t i = 0; i < MAX_CLIENTS; ++i) {
+            if (child_pids[i] != INVALID_PID) {
+                kill(child_pids[i], SIGTERM);
+            }
+        }
+
+        for (uint32_t i = 0; i < MAX_CLIENTS; ++i) {
+            if (child_pids[i] != INVALID_PID) {
+                waitpid(child_pids[i], NULL, 0);
+            #ifdef DEBUG
+                printf("[DEBUG (*\emoji{beetle}*)] Child process #%d terminated.\n", i);
+            #endif
+            }
+
+            if (i == MAX_CLIENTS - 1) {
+                spqr_assert(shmdt(shm_bitmask), "shmdt");
+                spqr_assert(shmctl(shm_id, IPC_RMID, NULL), "shmctl");
+            }
+            
+            child_pids[i] = INVALID_PID;
+        }
+
+        puts(SPQR_CLOSE_CONNECTION);
+        exit(EXIT_SUCCESS);
+    }
+}
+
+void child_server_signal_handler(const int32_t signo) {
+    if (signo == SIGTERM) {
+        char dummy[MAX_READ_LINE];
+        server_receive_packet(dummy, child_sockfd, MAX_READ_LINE);
+        memset(dummy, 0, MAX_READ_LINE);
+        server_close_connection_with_client(child_sockfd);
+        spqr_assert(close(child_sockfd), "close");
+        exit(EXIT_SUCCESS);
+    }
+}
+\end{lstlisting}
+
+La seconda funzione di interesse è \lstinlinebg{server_manage_client_connections()}.
+I punti salienti riguardanti tale funzione sono la stabilizzazione della connessione e l'assegnazione di una porta dedicata per ogni client, la gestione dei processi figli, la pulizia dei processi zombie, l'utilizzo della funzione \lstinlinebg{select()} per gestire le connessioni in arrivo, la gestione dei segnali e la gestione dei comandi inviati dai client.
+
+\begin{lstlisting}[caption={\lstinlinebg{src/spqr_server.c}},language=C,escapeinside={(*}{*)},keywords={for, get_bit, set_bit, continue, printf, pid_t, setup_signal_handling, init_packet_loss_simulator, EXIT_SUCCESS, exit, WNOHANG, SPQR_SERVER_BUSY, int8_t, const, uint16_t, char, memset, sizeof, key_t, KEY_PATH, ftok, shmget, SHM_SIZE, IPC_CREAT, PERMS, uint8_t, shmat, spqr_assert_shm, FREE, BUSY, fd_set, FD_ZERO, FD_SET, while, true, struct, timeval, select, EINTR, HANDLE_ERROR, break, FD_ISSET, uint32_t, int32_t, void, server_manage_client_commands, server_open_connection_with_client, server_close_connection_with_client, server_receive_packet, server_send_packet, MAX_READ_LINE, MAX_CLIENTS, INVALID_PID, fork, if, else, return, close, waitpid, NULL, spqr_assert, server_create_socket, load_ascii_art, PARENT, PORT, puts}]
+int8_t server_manage_client_connections(const int32_t sockfd) {
+    uint16_t port;
+    char buffer[MAX_READ_LINE];
+    memset(buffer, 0, sizeof(buffer));
+
+    // ? Initialize shared memory and bitmask as before
+    key_t key = ftok(KEY_PATH, 's');
+    spqr_assert(key, "ftok");
+    
+    shm_id = shmget(key, SHM_SIZE, IPC_CREAT | PERMS);
+    spqr_assert(shm_id, "shmget");
+    
+    shm_bitmask = (uint8_t *)shmat(shm_id, NULL, 0);
+    spqr_assert_shm(shm_bitmask, "shmat");
+    memset(shm_bitmask, FREE, SHM_SIZE);
+    
+    memset(child_pids, INVALID_PID, sizeof(child_pids));
+
+    // ? Set up the file descriptor set.
+    fd_set read_fds, master_fds;
+    int32_t max_fd = sockfd;
+    
+    FD_ZERO(&master_fds);
+    FD_SET(sockfd, &master_fds);
+
+    // ? Main server loop.
+    while (true) {
+        read_fds = master_fds;
+        
+        // ? Set timeout for select
+        struct timeval timeout;
+        timeout.tv_sec = 1;
+        timeout.tv_usec = 0;
+
+        int32_t ready = select(max_fd + 1, &read_fds, NULL, NULL, &timeout);
+        if (ready < 0) {
+            if (errno == EINTR) continue; // ? Handle interruption by signal.
+            HANDLE_ERROR("select");
+            break;
+        }
+
+        // ? Check for new connections on the main socket.
+        if (FD_ISSET(sockfd, &read_fds)) {
+            if (server_open_connection_with_client(sockfd)) {
+                uint32_t no_client = 0;
+                for (; no_client < MAX_CLIENTS; ++no_client) {
+                    if (!get_bit(no_client)) {
+                        set_bit(no_client, BUSY);
+                        break;
+                    }
+                    
+                    if (no_client == MAX_CLIENTS - 1) {
+                        server_send_packet(SPQR_SERVER_BUSY, sockfd);
+                        continue;
+                    }
+                }
+
+                port = PORT + no_client;
+                memset(buffer, 0, sizeof(buffer));
+                spqr_assert(snprintf(buffer, sizeof(buffer), "%d", port), "snprintf");
+                server_send_packet(buffer, sockfd);
+                printf("\nThe client #%d is connected on port %d.\n", no_client, port);
+
+                pid_t pid = fork();
+                spqr_assert(pid, "fork");
+                
+                if (pid == 0) { // ? Child process.
+                    spqr_assert(close(sockfd), "close"); // ? Close the parent's socket because it is not needed.
+                    setup_signal_handling(CHILD);
+                    init_packet_loss_simulator();
+                    
+                    child_sockfd = server_create_socket(port);
+                    int32_t status = server_manage_client_commands(child_sockfd);
+                    
+                    set_bit(no_client, FREE);
+                    printf("Closed connection for client #%d on port %d with exit code %d.\n", no_client, port, status);
+                    
+                    exit(status); // ? Close the child process.
+
+                } else { // ? Parent process.
+                    child_pids[no_client] = pid;
+                }
+            }
+        }
+
+        // ? Check for zombie processes and clean them up.
+        int32_t status;
+        pid_t wpid;
+        while ((wpid = waitpid(INVALID_PID, &status, WNOHANG)) > 0) {
+            // ? Handle terminated child process.
+            for (uint32_t i = 0; i < MAX_CLIENTS; ++i) {
+                if (child_pids[i] == wpid) {
+                    child_pids[i] = INVALID_PID;
+                    set_bit(i, FREE);
+                    break;
+                }
+            }
+        }
+    }
+
+    return EXIT_SUCCESS;
+}
+\end{lstlisting}
+
+Inoltre, come già accennato nel capitolo precedente, si è implementata una bitmask tramite memoria condivisa per tenere traccia delle connessioni attive.
+In particolare le funzioni \lstinlinebg{set_bit()} e \lstinlinebg{get_bit()} sono fondamentali per la gestione della bitmask.
+
+\begin{lstlisting}[caption={\lstinlinebg{src/spqr_server.c}},language=C,keywords={const, int8_t, bitmask_t, CHAR_BIT, fopen, exit, printf, if, else, return, stdin, void,  set_seconds_timeout, sockfd, MAX_CLIENTS, SIGQUIT, SIGINT, int32_t, uint32_t, INVALID_PID, SIGTERM, EXIT_SUCCESS, BUSY}]
+void set_bit(const uint32_t client_id, const bitmask_t state) {
+    int32_t byte_index = client_id / CHAR_BIT;
+    int32_t bit_index = client_id % CHAR_BIT;
+    if (state == BUSY) {
+        shm_bitmask[byte_index] |= (1 << bit_index); // ? Set the bit to 1
+    } else {
+        shm_bitmask[byte_index] &= ~(1 << bit_index); // ? Set the bit to 0
+    }
+}
+
+int8_t get_bit(const uint32_t client_id) {
+    int32_t byte_index = client_id / CHAR_BIT;
+    int32_t bit_index = client_id % CHAR_BIT;
+    return (shm_bitmask[byte_index] >> bit_index) & 1;
+}
+\end{lstlisting}
+
+Infine, una volta che un client si connette al server, viene creato un processo figlio per gestire la connessione tramite la funzione \lstinlinebg{server_manage_client_commands()}.
+Quest'ultima ha il compito di gestire i comandi inviati dal client, in particolare i comandi \lstinlinebg{GET} e \lstinlinebg{PUT} per il trasferimento dei file e i comandi \lstinlinebg{LIST} e \lstinlinebg{CLOSE} per la visualizzazione dei file e la chiusura della connessione.
+
+\section{Implementazione del client}
+Il client è il componente che si occupa di stabilire la connessione con il server, inviare i comandi e ricevere/inviare i file richiesti.
+Di seguito viene riportato il codice sorgente del client attraverso il quale seguirà una spiegazione dettagliata delle funzioni principali.
+
+\begin{lstlisting}[caption={\lstinlinebg{src/client.c}},language=C,escapeinside={(*}{*)},keywords={if, client_manage_server_commands, WINDOW_SIZE, LOSS_PROBABILITY, TIMEOUT, ADAPTIVE, close, load_ascii_art, printf, INFO, spqr_free, spqr_assert, MAX_READ_LINE, spqr_assert_ptr, memset, init_packet_loss_simulator, malloc, fprintf, stderr, EXIT_FAILURE, const, char, int32_t, void, setup_signal_handling, client_create_socket, client_establish_connection_with_server, client_manage_server_commands, PARENT, PORT, puts, return, include}]
+#include "spqr_client.h"
+
+int32_t main(int32_t argc, const char **argv) {
+    if (argc != 2) {
+        fprintf(stderr, "Usage: %s <IPv4>\n", *argv);
+        return EXIT_FAILURE;
+    }
+
+    setup_signal_handling();
+
+    init_packet_loss_simulator();
+
+    server_response = malloc(MAX_READ_LINE);
+    spqr_assert_ptr(server_response, "malloc");
+    memset(server_response, 0, MAX_READ_LINE);
+
+    if (!client_establish_connection_with_server(argv[1])) {
+        spqr_free(&server_response);
+        spqr_assert(close(sockfd), "close");
+        return EXIT_FAILURE;
+    }
+
+    load_ascii_art();
+    printf("(*\emoji{globe-with-meridians}*) Connection established with the server.\n");
+    printf(INFO, WINDOW_SIZE, LOSS_PROBABILITY, TIMEOUT, ADAPTIVE ? "true" : "false");
+
+    return client_manage_server_commands();
+}
+\end{lstlisting}
+
+Di particolare interesse è la funzione \lstinlinebg{setup_signal_handling()} che si occupa di settare i gestori dei segnali per il client.
+
+\begin{lstlisting}[caption={\lstinlinebg{src/spqr_client.c}},language=C,escapeinside={(*}{*)},keywords={SIGALRM, sigaction, client_signal_handler, SIGTERM, sigfillset, sigdelset, sigprocmask, SIG_BLOCK, sizeof, spqr_assert, sigemptyset, if, else, NULL, SIGINT, SIGQUIT, struct, sigset_t, memset, signal_handler_t, int32_t, void, client_create_socket, client_establish_connection_with_server, client_manage_server_commands, PARENT, PORT, puts, return}]
+void setup_signal_handling(void) {
+    struct sigaction sa;
+    sigset_t set;
+
+    memset(&sa, 0, sizeof(sa));
+    sa.sa_handler = client_signal_handler;
+    sa.sa_flags = 0;
+    spqr_assert(sigemptyset(&sa.sa_mask), "sigemptyset");
+    spqr_assert(sigaction(SIGINT, &sa, NULL), "sigaction");
+    spqr_assert(sigaction(SIGQUIT, &sa, NULL), "sigaction");
+    spqr_assert(sigaction(SIGALRM, &sa, NULL), "sigaction");
+    
+    // ? Block all signals except SIGINT, SIGQUIT, SIGALRM.
+    spqr_assert(sigfillset(&set), "sigfillset");
+    spqr_assert(sigdelset(&set, SIGINT), "sigdelset");
+    spqr_assert(sigdelset(&set, SIGQUIT), "sigdelset");
+    spqr_assert(sigdelset(&set, SIGALRM), "sigdelset");
+    spqr_assert(sigprocmask(SIG_BLOCK, &set, NULL), "sigprocmask");
+}
+\end{lstlisting}
+
+dove \lstinlinebg{client_signal_handler()} è la funzione che si occupa di gestire i segnali inviati al client.
+
+\begin{lstlisting}[caption={\lstinlinebg{src/spqr_client.c}},language=C,escapeinside={(*}{*)},keywords={if, else, spqr_assert, client_send_packet, client_close_connection_with_server, const, SPQR_SESSION_STOPPED, ifdef, endif, DEBUG, exit, puts, EXIT_SUCCESS, spqr_free, close, sockfd, SIGINT, SIGQUIT, SIGALRM, signal_handler_t, int32_t, void, client_create_socket, client_establish_connection_with_server, client_manage_server_commands, PARENT, PORT, return}]
+void client_signal_handler(const int32_t sig) {
+    if (sig == SIGINT) {
+    #ifdef DEBUG
+        puts("\n" SPQR_SESSION_STOPPED);
+    #endif
+        client_send_packet(feedback.EXIT, sockfd);
+        client_close_connection_with_server(sockfd);
+
+    } else if (sig == SIGQUIT) {
+    #ifdef DEBUG
+        puts("\n" SPQR_SESSION_STOPPED);
+    #endif
+        client_send_packet(feedback.EXIT, sockfd);
+
+    } else if (sig == SIGALRM) {
+        puts("\n" SPQR_TIMEOUT_SESSION);
+
+        client_send_packet(feedback.EXIT, sockfd);
+        client_close_connection_with_server(sockfd);
+    }
+
+    spqr_free(&server_response);
+    spqr_free(&client_pathname);
+    spqr_assert(close(sockfd), "close");
+
+    exit(EXIT_SUCCESS);
+}
+\end{lstlisting}
+
+Un altra funzione di interesse è \lstinlinebg{client_establish_connection_with_server()}, la quale si occupa di stabilire la connessione con il server.
+
+\begin{lstlisting}[caption={\lstinlinebg{src/spqr_client.c}},language=C,escapeinside={(*}{*)},keywords={continue, break, CONNECTION_ATTEMPTS, HANDLE_ERROR, if, int8_t, char, true, false, COLOR_RESET,  else, spqr_assert, client_send_packet, client_close_connection_with_server, const, client_open_connection_with_server, MAX_READ_LINE, uint16_t, to_uint16, SPQR_CONNECTION_REFUSED, SPQR_SESSION_STOPPED, ifdef, endif, DEBUG, exit, puts, strcmp, SPQR_SERVER_BUSY, EXIT_SUCCESS, spqr_free, close, while, printf, COLOR_RED, client_receive_packet, set_seconds_timeout, SIGINT, SIGQUIT, SIGALRM, signal_handler_t, int32_t, void, client_create_socket, bool, client_manage_server_commands, PARENT, PORT, return}]
+bool client_establish_connection_with_server(const char *ip) {
+    int8_t connection_attempts = CONNECTION_ATTEMPTS;
+
+    sockfd = client_create_socket(ip, PORT - 1);
+    spqr_assert(sockfd, "client_create_socket");
+
+    set_seconds_timeout(sockfd, CONNECTION_ATTEMPTS);
+    while (connection_attempts > 0) {
+        if (!client_open_connection_with_server(sockfd)) {
+            printf(COLOR_RED "(*\emoji{warning}*) Connection refused (remaining attempts: %d)\n", --connection_attempts);
+            continue;
+        }
+        set_seconds_timeout(sockfd, 0);
+        
+        client_receive_packet(server_response, sockfd, MAX_READ_LINE);
+        if (strcmp(server_response, SPQR_SERVER_BUSY) == 0) {
+            puts(SPQR_SERVER_BUSY);
+            return false;
+        }
+
+        uint16_t port;
+        if (!to_uint16(server_response, &port)) {
+        #ifdef DEBUG
+            HANDLE_ERROR("to_uint16");
+        #endif
+            return false;
+        }
+        
+        spqr_assert(close(sockfd), "close");
+        sockfd = client_create_socket(ip, port);
+        break;
+    }
+    set_seconds_timeout(sockfd, 0);
+
+    if (connection_attempts == 0) {
+        puts(COLOR_RESET SPQR_CONNECTION_REFUSED);
+        return false;
+    }
+
+    puts(COLOR_RESET);
+    return true;
+}
+\end{lstlisting}
+
+In particolare essa gestisce i tentativi di connessione e il caso in cui il server è down.
+Infatti, in quest'ultimo caso il client tenterà di connettersi nuovamente per un numero di volte definito dalla costante \lstinlinebg{CONNECTION_ATTEMPTS} che per default è settata a $3$.
+Per fare ciò è usato un timeout, tramite la funzione \lstinlinebg{set_seconds_timeout()}, per evitare che il client rimanga bloccato in attesa di una risposta dal server.
+Quindi, se il server è down, il client stamperà un messaggio di errore e terminerà la connessione.
+Infine, la funzione \lstinlinebg{client_manage_server_commands()} è responsabile della gestione dei comandi (\lstinlinebg{GET}, \lstinlinebg{PUT}, \lstinlinebg{LIST} e \lstinlinebg{CLOSE}) inviati dal server al client.
+
+\section{Implementazione del Three-Way Handshake}
+Il \textit{Three-Way Handshake} di apertura, il cui funzionamento è stato descritto nel capitolo precedente, è stato implementato tramite le funzioni \lstinlinebg{server_open_connection_with_client()} e \lstinlinebg{client_open_connection_with_server()} per il server e il client rispettivamente.
+
+\begin{lstlisting}[caption={\lstinlinebg{src/spqr_server.c}},language=C,escapeinside={(*}{*)},keywords={bool, memset, ifdef, endif, HANDLE_ERROR, DEBUG, return, strcmp, true, false, if, else, spqr_assert, client_send_packet, client_receive_packet, const, char, int32_t, void, server_send_packet, server_receive_packet, MAX_READ_LINE, SPQR_SYN, SPQR_ACK, SPQR_SYN_ACK, SPQR_ACK_ACK}]
+bool server_open_connection_with_client(const int32_t sockfd) {
+    char buffer[MAX_READ_LINE];
+    memset(buffer, 0, MAX_READ_LINE);
+
+    server_receive_packet(buffer, sockfd, MAX_READ_LINE);
+    if (strcmp(buffer, udp.SYN)) {
+    #ifdef DEBUG
+        HANDLE_ERROR(udp.SYN);
+    #endif
+        return false;
+    }
+
+    server_send_packet(udp.SYNACK, sockfd);
+
+    server_receive_packet(buffer, sockfd, MAX_READ_LINE);
+    if (strcmp(buffer, udp.ACK)) {
+    #ifdef DEBUG
+        HANDLE_ERROR(udp.ACK);
+    #endif
+        return false;
+    }
+
+    return true;
+}
+\end{lstlisting}
+
+\begin{lstlisting}[caption={\lstinlinebg{src/spqr_client.c}},language=C,escapeinside={(*}{*)},keywords={if, else, ifdef, endif, DEBUG, memset, strcmp, bool, HANDLE_ERROR, return, false, true, spqr_assert, client_send_packet, client_receive_packet, const, char, int32_t, void, server_send_packet, server_receive_packet, MAX_READ_LINE, SPQR_SYN, SPQR_ACK, SPQR_SYN_ACK, SPQR_ACK_ACK}]
+bool client_open_connection_with_server(const int32_t sockfd) {
+    char buffer[MAX_READ_LINE];
+    memset(buffer, 0, MAX_READ_LINE);
+
+    client_send_packet(udp.SYN, sockfd);
+
+    client_receive_packet(buffer, sockfd, MAX_READ_LINE);
+    if (strcmp(buffer, udp.SYNACK)) {
+    #ifdef DEBUG
+        HANDLE_ERROR(udp.SYNACK);
+    #endif
+        return false;
+    }
+
+    client_send_packet(udp.ACK, sockfd);
+    
+    return true;
+}
+\end{lstlisting}
+
+
+Mentre il \textit{Three-Way Handshake} di chiusura è stato implementato tramite le funzioni \lstinlinebg{server_close_connection_with_client()} e \lstinlinebg{client_close_connection_with_server()} per il server e il client rispettivamente.
+
+\begin{lstlisting}[caption={\lstinlinebg{src/spqr_server.c}},language=C,escapeinside={(*}{*)},keywords={int8_t, memset, strcmp, return, EXIT_SUCCESS, TRANSFER_ERROR, HANDLE_ERROR, ifdef, endif, DEBUG, if, else, spqr_assert, client_send_packet, client_receive_packet, const, char, int32_t, void, server_send_packet, server_receive_packet, MAX_READ_LINE, SPQR_SYN, SPQR_ACK, SPQR_SYN_ACK, SPQR_ACK_ACK}]
+int8_t server_close_connection_with_client(const int32_t sockfd) {
+    char buffer[MAX_READ_LINE];
+    memset(buffer, 0, MAX_READ_LINE);
+
+    server_receive_packet(buffer, sockfd, MAX_READ_LINE);
+    if (strcmp(buffer, udp.FIN)) {
+    #ifdef DEBUG
+        HANDLE_ERROR(udp.FIN);
+    #endif
+        return TRANSFER_ERROR;
+    }
+    
+    server_send_packet(udp.FINACK, sockfd);
+    server_send_packet(udp.FIN, sockfd);
+    
+    server_receive_packet(buffer, sockfd, MAX_READ_LINE);
+    if (strcmp(buffer, udp.FINACK)) {
+    #ifdef DEBUG
+        HANDLE_ERROR("FINACK");
+    #endif
+        return TRANSFER_ERROR;
+    }
+
+    return EXIT_SUCCESS;
+}
+\end{lstlisting}
+
+\begin{lstlisting}[caption={\lstinlinebg{src/spqr_client.c}},language=C,escapeinside={(*}{*)},keywords={SPQR_CLOSE_CONNECTION, int8_t, memset, strcmp, ifdef, endif, DEBUG, return, HANDLE_ERROR, TRANSFER_ERROR, puts, EXIT_SUCCESS, if, else, spqr_assert, client_send_packet, client_receive_packet, const, char, int32_t, void, server_send_packet, server_receive_packet, MAX_READ_LINE, SPQR_SYN, SPQR_ACK, SPQR_SYN_ACK, SPQR_ACK_ACK}]
+int8_t client_close_connection_with_server(const int32_t sockfd) {
+    char buffer[MAX_READ_LINE];
+    memset(buffer, 0, MAX_READ_LINE);
+
+    client_send_packet(udp.FIN, sockfd);
+
+    client_receive_packet(buffer, sockfd, MAX_READ_LINE);
+    if (strcmp(buffer, udp.FINACK)) {
+    #ifdef DEBUG
+        HANDLE_ERROR(udp.FINACK);
+    #endif
+        return TRANSFER_ERROR;
+    }
+
+    client_receive_packet(buffer, sockfd, MAX_READ_LINE);
+    if (strcmp(buffer, udp.FIN)) {
+    #ifdef DEBUG
+        HANDLE_ERROR(udp.FIN);
+    #endif
+        return TRANSFER_ERROR;
+    }
+    
+    client_send_packet(udp.FINACK, sockfd);
+    puts(SPQR_CLOSE_CONNECTION);
+    return EXIT_SUCCESS;
+}
+\end{lstlisting}
+
+Infine si riportano le implementazioni dettagliate delle funzioni \lstinlinebg{server_receive_packet()}, \lstinlinebg{server_send_packet()}, \lstinlinebg{client_send_packet()} e \lstinlinebg{client_receive_packet()}.
+
+\begin{lstlisting}[caption={\lstinlinebg{src/spqr_server.c}},language=C,escapeinside={(*}{*)},keywords={strlen, uint64_t, MSG_WAITALL, struct, sockaddr, recvfrom, if, else, spqr_assert, sendto, const, char, int32_t, void, MAX_READ_LINE, udp, sockaddr_in, memset, sizeof, inet_pton, htons, perror, return}]
+char *server_receive_packet(char *msg, const int32_t sockfd, const uint64_t size) {
+    memset(msg, 0, size);
+    spqr_assert(recvfrom(sockfd, msg, size, MSG_WAITALL, (struct sockaddr *) &client_addr, &client_len), "recvfrom");
+    return msg;
+}
+
+void server_send_packet(const char *msg, const int32_t sockfd) {
+    spqr_assert(sendto(sockfd, msg, strlen(msg), 0, (struct sockaddr *) &client_addr, client_len), "sendto");
+}
+\end{lstlisting}
+
+\begin{lstlisting}[caption={\lstinlinebg{src/spqr_client.c}},language=C,escapeinside={(*}{*)},keywords={strlen, uint64_t, int64_t, recvfrom, struct, sockaddr, HANDLE_ERROR, EWOULDBLOCK, EAGAIN, ifdef, endif, DEBUG, MSG_WAITALL, if, else, spqr_assert, sendto, const, char, int32_t, void, client_send_packet, MAX_READ_LINE, udp, sockaddr_in, memset, sizeof, inet_pton, htons, perror, return}]
+void client_send_packet(const char *msg, const int32_t sockfd) {
+    spqr_assert(sendto(sockfd, msg, strlen(msg), 0, (struct sockaddr *) &server_addr, server_len), "sendto");
+}
+
+char *client_receive_packet(char *msg, const int32_t sockfd, const uint64_t size) {
+    memset(msg, 0, size);
+    int64_t n = recvfrom(sockfd, msg, size, MSG_WAITALL, (struct sockaddr *) &server_addr, &server_len);
+    if (n < 0) {
+        if (errno == EWOULDBLOCK || errno == EAGAIN) {
+            return NULL;
+
+        } else {
+        #ifdef DEBUG
+            HANDLE_ERROR("recvfrom");
+        #endif
+        }
+    }
+    return msg;
+}
+\end{lstlisting}
+
+\section{Implementazione del protocollo Selective Repeat}
+Per l'implementazione del protocollo \textit{Selective Repeat} sono state implementate due strutture dati, \lstinlinebg{packet_t} e \lstinlinebg{ack_packet_t}, per rappresentare i pacchetti e i pacchetti di ack rispettivamente.
+
+\begin{lstlisting}[caption={\lstinlinebg{src/protocol.h}},language=C,escapeinside={(*}{*)},keywords={ack_packet_t, packet_t, bool, int8_t, int32_t, int64_t, define, PACKET_SIZE, MAX_RETRIES, typedef, struct, uint32_t, uint16_t, uint8_t, char, spqr_packet_t, spqr_ack_t}]
+#define PACKET_SIZE 1500 // ? bytes
+
+typedef struct {
+    int8_t payload[PACKET_SIZE]; // ? Data payload
+    int32_t seq_num;             // ? Sequence number
+    int32_t no_packets_to_send;  // ? Total number of packets to send
+    int64_t no_bytes_to_send;    // ? Total number of bytes to send
+    int64_t size;                // ? Size of the packet
+    bool sent;                   // ? Sent flag
+    bool received;               // ? Received flag
+    bool ack;                    // ? Acknowledged flag
+} packet_t;
+
+typedef struct {
+    int32_t seq_num;    // ? Sequence number
+    int64_t size;       // ? Size of the packet
+    int64_t write_byte; // ? Number of bytes written
+} ack_packet_t;
+\end{lstlisting}
+
+\subsection{Implementazione del sender}
+Il sender è responsabile dell'invio dei pacchetti e della gestione degli ack ricevuti.
+In questo caso particolare sono state implementate tre funzioni principali: \lstinlinebg{main_sender()}, \lstinlinebg{send_data_to_receiver()} e \lstinlinebg{wait_ack()}.
+La funzione \lstinlinebg{main_sender()} si occupa di configurare il timeout del socket, di aprire e leggere il file da inviare, di calcolare la dimensione del file e il numero di pacchetti da inviare, di inizializzare la finestra di invio, di coordinare l'invio dei pacchetti e la gestione degli ACK.
+Inoltre si occupa di calcolare le statistiche di throughput e di stamparle a fine trasmissione.
+Infine gestisce gli errori e il fallimento del trasferimento.
+
+\begin{lstlisting}[caption={\lstinlinebg{src/protocol.c}},language=C,keywords={TIMEOUT, fopen, for, fread, PACKET_SIZE, break, ifdef, endif, IS_CLIENT, timeval, gettimeofday, send_data_to_receiver, wait_ack, while, true, ack_packet_t, recvfrom, WRITE_BYTE_ERROR, MAX_ERRORS, double, SPQR_KB, FILE_TRANSFER_FAILED, EXIT_SUCCESS, FILE_TRANSFER_COMPLETED, printf, sendto, SEQ_NUM_ERROR, sizeof, int8_t, int32_t, uint16_t, int64_t, struct, sockaddr, sockaddr_in, char, socklen_t, uint32_t, uint64_t, WINDOW_SIZE, stat, fstat, fileno, set_timeout, FILE, NULL, HANDLE_ERROR, return, TRANSFER_ERROR, if, else, perror, exit, fprintf, stderr, MAX_RETRIES, spqr_assert, spqr_free, fclose, free, spqr_assert_ptr, fseek, SEEK_END, ftell, rewind, malloc, memset, sizeof, packet_t, MAX_READ_LINE, MAX_WINDOW_SIZE, MAX_PACKETS, MAX_ACKS}]
+int8_t main_sender(int32_t sockfd, struct sockaddr_in *sender_addr, char *pathname) {
+    socklen_t len = sizeof(*sender_addr);
+    int32_t seq_num = 0;
+    int64_t n;
+    uint16_t max_errors = 0;
+    uint64_t counter = 0;
+    int32_t no_packets_to_send = 0;
+
+    // ? Set the timeout of the socket.
+    set_timeout(sockfd, TIMEOUT);
+
+    // ? Open the file in read-binary mode.
+    FILE *file = fopen(pathname, "rb");
+    if (file == NULL) {
+        HANDLE_ERROR("fopen");
+        return TRANSFER_ERROR;
+    }
+
+    // ? Calculate the size of the file.
+    struct stat st;
+    if (fstat(fileno(file), &st) != 0) {
+        HANDLE_ERROR("fstat");
+        fclose(file);
+        return TRANSFER_ERROR;
+    }
+    int64_t size_file = st.st_size;
+
+    // ? Calculate the number of packets to send.
+    no_packets_to_send = (size_file % PACKET_SIZE) ? (size_file / PACKET_SIZE) + 1 : size_file / PACKET_SIZE;
+
+    // ? Create the initial window.
+    uint32_t window_size = (no_packets_to_send < WINDOW_SIZE) ? no_packets_to_send : WINDOW_SIZE;
+    packet_t window[WINDOW_SIZE] = { 0 };
+
+    // ? Fill the window with the packets.
+    for (uint32_t i = 0; i < window_size; ++i) {
+        packet_t packet = { 0 };
+        
+        uint64_t num_read = fread(packet.payload, 1, PACKET_SIZE, file);
+        if (num_read == 0) { break; }
+
+        counter += num_read;
+        packet.seq_num = seq_num;
+        packet.no_packets_to_send = no_packets_to_send;
+        packet.no_bytes_to_send = counter;
+        packet.size = num_read;
+        packet.sent = false;
+        packet.ack = false;
+        packet.received = false;
+        window[i] = packet;
+
+        seq_num = (seq_num + 1) % window_size;
+    }
+
+#ifdef IS_CLIENT
+    struct timeval end, start;
+    spqr_assert(gettimeofday(&start, NULL), "gettimeofday");
+#endif
+
+    // ? Start sending the packets.
+    send_data_to_receiver(sockfd, sender_addr, window, window_size);
+    wait_ack(sockfd, sender_addr, len, window, window_size, file, size_file, &max_errors, &counter, &no_packets_to_send);
+    
+#ifdef IS_CLIENT
+    spqr_assert(gettimeofday(&end, NULL), "gettimeofday");
+#endif
+
+    int64_t ret = 0;
+    while (true) {
+        ack_packet_t new_ack = { 0 };
+        n = recvfrom(sockfd, &new_ack, sizeof(new_ack), 0, (struct sockaddr *) sender_addr, &len);
+        if (n < 0) { break; }
+        ret = new_ack.write_byte;
+    }
+
+    spqr_assert(fclose(file), "fclose");
+    set_timeout(sockfd, 0);
+
+    if (ret == WRITE_BYTE_ERROR) { return TRANSFER_ERROR; }
+
+#ifdef IS_CLIENT
+    double time = end.tv_sec - start.tv_sec + (double)(end.tv_usec - start.tv_usec) / 1e6;
+    double throughput = (time != 0.0) ? (size_file / time) / SPQR_KB : 0.0; // [kB/s]
+#endif
+
+    if (max_errors >= MAX_ERRORS) {
+    
+    #ifdef IS_CLIENT
+        printf("\n\n" FILE_TRANSFER_FAILED, time, throughput);
+    #endif
+    
+        packet_t packet = { 0 };
+        packet.seq_num = SEQ_NUM_ERROR;
+
+        n = sendto(sockfd, &packet, sizeof(packet), 0, (struct sockaddr *) sender_addr, len);
+        if (n < 0) { HANDLE_ERROR("sendto"); }
+    
+        return TRANSFER_ERROR;
+    }
+
+#ifdef IS_CLIENT
+    printf("\n\n" FILE_TRANSFER_COMPLETED, time, throughput);
+#endif
+
+    return EXIT_SUCCESS;
+}
+\end{lstlisting}
+
+La funzione \lstinlinebg{send_data_to_receiver()} si occupa dell'invio effettivo dei pacchetti al receiver, verificando quali pacchetti nella finestra devono essere inviati.
+Inoltre simula l'eventuale perdita di pacchetti tramite l'ausilio della funzione \lstinlinebg{can_send_packet()}.
+
+\begin{lstlisting}[caption={\lstinlinebg{src/common.c}},language=C,keywords={void, LOSS_PROBABILITY, rand, bool, for, fread, PACKET_SIZE, break, ifdef, endif, IS_CLIENT, timeval, gettimeofday, send_data_to_receiver, wait_ack, while, true, ack_packet_t, recvfrom, WRITE_BYTE_ERROR, MAX_ERRORS, double, SPQR_KB, FILE_TRANSFER_FAILED, EXIT_SUCCESS, FILE_TRANSFER_COMPLETED, printf, sendto, SEQ_NUM_ERROR, sizeof, int8_t, int32_t, uint16_t, int64_t, struct, sockaddr, sockaddr_in, char, socklen_t, uint32_t, uint64_t, WINDOW_SIZE, stat, fstat, fileno, set_timeout, FILE, NULL, HANDLE_ERROR, return, TRANSFER_ERROR, if, else, perror, exit, fprintf, stderr, MAX_RETRIES, spqr_assert, spqr_free, fclose, free, spqr_assert_ptr, fseek, SEEK_END, ftell, rewind, malloc, memset, sizeof, packet_t, MAX_READ_LINE, MAX_WINDOW_SIZE, MAX_PACKETS, MAX_ACKS}]
+// ? This function is used to simulate the loss of a packet.
+// ? The function returns true if the packet can be sent, false otherwise.
+bool can_send_packet(void) {
+    return (rand() % 100 + 1) > LOSS_PROBABILITY;
+}
+\end{lstlisting}
+
+Infine marca i pacchetti come inviati e verifica il completamento del trasferimento.
+
+\begin{lstlisting}[caption={\lstinlinebg{src/protocol.c}},language=C,keywords={void, continue, can_send_packet, for, fread, PACKET_SIZE, break, ifdef, endif, IS_CLIENT, false, timeval, gettimeofday, wait_ack, while, true, ack_packet_t, recvfrom, WRITE_BYTE_ERROR, MAX_ERRORS, double, SPQR_KB, FILE_TRANSFER_FAILED, EXIT_SUCCESS, FILE_TRANSFER_COMPLETED, printf, sendto, SEQ_NUM_ERROR, sizeof, int8_t, int32_t, uint16_t, int64_t, struct, sockaddr, sockaddr_in, char, socklen_t, uint32_t, uint64_t, WINDOW_SIZE, stat, fstat, fileno, set_timeout, FILE, NULL, HANDLE_ERROR, return, TRANSFER_ERROR, if, else, perror, exit, fprintf, stderr, MAX_RETRIES, spqr_assert, spqr_free, fclose, free, spqr_assert_ptr, fseek, SEEK_END, ftell, rewind, malloc, memset, sizeof, packet_t, MAX_READ_LINE, MAX_WINDOW_SIZE, MAX_PACKETS, MAX_ACKS}]
+void send_data_to_receiver(int32_t sockfd, struct sockaddr_in *sender_addr, packet_t *window, uint32_t window_size) {
+    int64_t n;
+    for (uint32_t i = 0; i < window_size; ++i) {
+        if (window[i].ack == false) { // ? Check if the packet has been acknowledged.
+            if (can_send_packet()) { // ? Check if the packet is lost.
+                n = sendto(sockfd, &window[i], sizeof(window[i]), 0, (struct sockaddr *) sender_addr, sizeof(*sender_addr));
+                if (n < 0) {
+                    HANDLE_ERROR("sendto");
+                    continue;
+                }
+                window[i].sent = true;
+                if (window[i].size == 0 || n == 0) { break; } // ? Check if the file has been completely sent.
+            }
+        }
+    }
+}
+\end{lstlisting}
+
+Infine la funzione \lstinlinebg{wait_ack()} attende e gestice gli ACK dal receiver, implementa il meccaniscmo di timeout e ritrasmissione, gestisce il conteggio degli errori, aggiorna la finestra scorrevole, carica nuovi pacchetti quando necessario, implementa il controllo di flusso e gestisce il timeout adattivo se abilitato.
+
+\begin{lstlisting}[caption={\lstinlinebg{src/protocol.c}},language=C,keywords={print_progress, ADAPTIVE, decrease_timeout, increase_timeout, goto, can_send_packet, false, MSG_CONFIRM, for, fread, PACKET_SIZE, break, ifdef, endif, IS_CLIENT, timeval, gettimeofday, send_data_to_receiver, void, while, true, ack_packet_t, recvfrom, WRITE_BYTE_ERROR, MAX_ERRORS, double, SPQR_KB, FILE_TRANSFER_FAILED, EXIT_SUCCESS, FILE_TRANSFER_COMPLETED, printf, sendto, SEQ_NUM_ERROR, sizeof, int8_t, int32_t, uint16_t, int64_t, struct, sockaddr, sockaddr_in, char, socklen_t, uint32_t, uint64_t, WINDOW_SIZE, stat, fstat, fileno, set_timeout, FILE, NULL, HANDLE_ERROR, return, TRANSFER_ERROR, if, else, perror, exit, fprintf, stderr, MAX_RETRIES, spqr_assert, spqr_free, fclose, free, spqr_assert_ptr, fseek, SEEK_END, ftell, rewind, malloc, memset, sizeof, packet_t, MAX_READ_LINE, MAX_WINDOW_SIZE, MAX_PACKETS, MAX_ACKS}]
+void wait_ack(int32_t sockfd, struct sockaddr_in *sender_addr, socklen_t len, packet_t *window, uint32_t window_size, FILE *file, int64_t size_file, uint16_t *max_errors, uint64_t *counter, int32_t *no_packets_to_send) {
+    int64_t n;
+    int32_t ack_num;
+    int64_t last_ack_confirmed_bytes = 0;
+    uint64_t num_read;
+    uint32_t i = 0;
+    ack_packet_t new_ack = { 0 };
+
+#ifdef IS_CLIENT
+    printf("\n");
+#endif
+
+    while (true) {
+    wait_for_ack:
+        n = recvfrom(sockfd, &new_ack, sizeof(new_ack), 0, (struct sockaddr *) sender_addr, &len); // ? Wait for the acknowledgment from the receiver.
+        if (n < 0) { // ? If the acknowledgment is not received.
+            (*max_errors)++;
+            if (*max_errors >= MAX_ERRORS) { return; }
+            if (ADAPTIVE) { increase_timeout(sockfd); }
+
+            // ? Resend the packets that have not been acknowledged.
+            for (uint32_t j = 0; j < window_size; ++j) {
+                if (window[j].ack == false || window[j].no_bytes_to_send > last_ack_confirmed_bytes) {
+                    if (can_send_packet()) { // ? Check if the packet is lost.
+                        n = sendto(sockfd, &window[j], sizeof(window[j]), MSG_CONFIRM, (struct sockaddr *) sender_addr, sizeof(*sender_addr));
+                        if (n < 0) {
+                            HANDLE_ERROR("sendto");
+                        } else {
+                            window[j].sent = true;
+                        }
+                    }
+                }
+            }
+            goto wait_for_ack;
+        }
+
+        *max_errors = 0;
+
+        // ? Check if the acknowledgment is received.
+        if (new_ack.seq_num == SEQ_NUM_ERROR || new_ack.write_byte > size_file || new_ack.write_byte == WRITE_BYTE_ERROR) { return; }
+        if (ADAPTIVE) { decrease_timeout(sockfd); }
+
+        ack_num = new_ack.seq_num;
+        if (new_ack.size > last_ack_confirmed_bytes) { last_ack_confirmed_bytes = new_ack.size; }
+
+        // ? If the acknowledgment is received, I skip to the next packet.
+        if (window[ack_num].ack == true) {
+            continue;
+
+        } else {
+            window[ack_num].ack = true;
+        
+        #ifdef IS_CLIENT
+            print_progress(size_file, new_ack.write_byte);
+        #endif
+
+            while (window[i].ack && *no_packets_to_send > 0) {
+                packet_t packet = { 0 };
+                
+                --(*no_packets_to_send);
+
+                num_read = fread(packet.payload, 1, PACKET_SIZE, file);
+                if (num_read == 0) { break; }
+
+                *counter += num_read;
+                packet.seq_num = i;
+                packet.no_packets_to_send = *no_packets_to_send;
+                packet.no_bytes_to_send = *counter;
+                packet.size = num_read;
+                packet.sent = false;
+                packet.ack = false;
+                packet.received = false;
+                window[i] = packet;
+
+                if (can_send_packet()) { // ? Check if the packet is lost.
+                    n = sendto(sockfd, &window[i], sizeof(window[i]), 0, (struct sockaddr *) sender_addr, sizeof(*sender_addr));
+                    if (n < 0) {
+                        HANDLE_ERROR("sendto");
+                    } else {
+                        window[i].sent = true;
+                    }
+                }
+                if (window[i].size == 0 || n == 0) { break; } // ? Check if the file has been completely sent.
+                
+                i = (i + 1) % window_size; // ? Move to the next packet.
+            }
+        }
+    }
+}
+\end{lstlisting}
+
+\subsection{Implementazione del receiver}
+Il receiver è responsabile della ricezione dei pacchetti e dell'invio degli ACK al sender.
+In questo caso particolare sono state implementate due funzioni principali: \lstinlinebg{main_receiver()} e \lstinlinebg{receive_data_from_sender()}.
+La funzione \lstinlinebg{main_receiver()} si occupa di gestire la ricezione del file, di inizializzare la finestra di ricezione e di aprire il file in modalità di scrittura binaria.
+Successivamente si occupa di inviare il primo ACK al sender per iniziare il trasferimento e di gestire il calcolo del throughput (solo in modalità client).
+In caso di errori, elimina il file incompleto e invia l'ACK finale al termine della ricezione.
+
+\begin{lstlisting}[caption={\lstinlinebg{src/protocol.c}},language=C,keywords={puts, DEBUG, SPQR_FILENAME_SUCCESSFULLY_DELETED, remove, strlen, receive_data_from_sender, fopen, for, fread, PACKET_SIZE, break, ifdef, endif, IS_CLIENT, timeval, gettimeofday, send_data_to_receiver, wait_ack, while, true, ack_packet_t, recvfrom, WRITE_BYTE_ERROR, MAX_ERRORS, double, SPQR_KB, FILE_TRANSFER_FAILED, EXIT_SUCCESS, FILE_TRANSFER_COMPLETED, printf, sendto, SEQ_NUM_ERROR, sizeof, int8_t, int32_t, uint16_t, int64_t, struct, sockaddr, sockaddr_in, char, socklen_t, uint32_t, uint64_t, WINDOW_SIZE, stat, fstat, fileno, set_timeout, FILE, NULL, HANDLE_ERROR, return, TRANSFER_ERROR, if, else, perror, exit, fprintf, stderr, MAX_RETRIES, spqr_assert, spqr_free, fclose, free, spqr_assert_ptr, fseek, SEEK_END, ftell, rewind, malloc, memset, sizeof, packet_t, MAX_READ_LINE, MAX_WINDOW_SIZE, MAX_PACKETS, MAX_ACKS}]
+int8_t main_receiver(const int32_t sockfd, struct sockaddr_in *receiver_addr, const char *pathname) {
+    socklen_t receiver_len = sizeof(*receiver_addr);
+    int64_t n;
+    int64_t size_received = 0;
+    packet_t window[WINDOW_SIZE] = { 0 };
+
+    // ? Open the file in write-binary mode.
+    FILE *file = fopen(pathname, "wb");
+    if (file == NULL) {
+        HANDLE_ERROR("fopen");
+        return TRANSFER_ERROR;
+    }
+
+    // ? Send the first acknowledgment to the sender.
+    n = sendto(sockfd, feedback.START_TRANSFER, strlen(feedback.START_TRANSFER), 0, (struct sockaddr *) receiver_addr, receiver_len);
+    if (n < 0) {
+        HANDLE_ERROR("sendto");
+        fclose(file);
+        return TRANSFER_ERROR;
+    }
+    
+    // ? Initialize the window.
+    for (int32_t i = 0, seq_num = 0; i < WINDOW_SIZE; ++i) {
+        window[i].seq_num = seq_num++;
+        window[i].received = false;
+        window[i].sent = false;
+        window[i].ack = false;
+        window[i].no_bytes_to_send = 0;
+        window[i].size = 0;
+    }
+
+#ifdef IS_CLIENT
+    struct timeval end, start;
+    spqr_assert(gettimeofday(&start, NULL), "gettimeofday");
+#endif
+
+    // ? Receive the data from the sender.
+    int8_t ret = receive_data_from_sender(sockfd, receiver_addr, receiver_len, window, &size_received, file);
+    spqr_assert(fclose(file), "fclose");
+
+#ifdef IS_CLIENT
+    spqr_assert(gettimeofday(&end, NULL), "gettimeofday");
+    double time = end.tv_sec - start.tv_sec + (double)(end.tv_usec - start.tv_usec) / 1e6;
+    double throughput = (time != 0.0) ? (size_received / time) / SPQR_KB : 0.0; // [kB/s]
+#endif
+
+    if (n < 0 || ret == TRANSFER_ERROR) {
+    #ifdef IS_CLIENT
+        printf("\n\n" FILE_TRANSFER_FAILED, time, throughput);
+    #endif
+
+        // ? Delete the file.
+        spqr_assert(remove(pathname), "remove");
+    
+    #ifdef DEBUG
+        puts(SPQR_FILENAME_SUCCESSFULLY_DELETED);
+    #endif
+        return ret;
+    }
+    
+    // ? Send the last acknowledgment to the sender.
+    for (int32_t i = 0; i < MAX_RETRIES; ++i) {
+        ack_packet_t ack = { 0 };
+        ack.seq_num = SEQ_NUM_ERROR;
+        ack.write_byte = size_received;
+        n = sendto(sockfd, &ack, sizeof(ack), 0, (struct sockaddr *) receiver_addr, receiver_len);
+        if (n < 0) { HANDLE_ERROR("sendto"); }
+    }
+
+#ifdef IS_CLIENT
+    printf("\n\n" FILE_TRANSFER_COMPLETED, time, throughput);
+#endif
+
+    return EXIT_SUCCESS;
+}
+\end{lstlisting}
+
+La funzione \lstinlinebg{receive_data_from_sender()} si occupa della ricezione effettiva dei pacchetti dal sender, della verifica della sequenza dei pacchetti ricevuti e del controllo di eventuali pacchetti duplicati.
+Inoltre scrive i dati sul file in modo ordinato, invia gli ACK per i pacchetti ricevuti correttamente, gestisce la finestra scorrevole (lato receiver) e mostra la progress bar (solo in modalità client).
+
+\begin{lstlisting}[caption={\lstinlinebg{src/protocol.c}},language=C,keywords={can_send_packet, fwrite, static, print_progress, false, goto, continue, const, bool, do, for, fread, PACKET_SIZE, break, ifdef, endif, IS_CLIENT, timeval, gettimeofday, send_data_to_receiver, wait_ack, while, true, ack_packet_t, recvfrom, WRITE_BYTE_ERROR, MAX_ERRORS, double, SPQR_KB, FILE_TRANSFER_FAILED, EXIT_SUCCESS, FILE_TRANSFER_COMPLETED, printf, sendto, SEQ_NUM_ERROR, sizeof, int8_t, int32_t, uint16_t, int64_t, struct, sockaddr, sockaddr_in, char, socklen_t, uint32_t, uint64_t, WINDOW_SIZE, stat, fstat, fileno, set_timeout, FILE, NULL, HANDLE_ERROR, return, TRANSFER_ERROR, if, else, perror, exit, fprintf, stderr, MAX_RETRIES, spqr_assert, spqr_free, fclose, free, spqr_assert_ptr, fseek, SEEK_END, ftell, rewind, malloc, memset, sizeof, packet_t, MAX_READ_LINE, MAX_WINDOW_SIZE, MAX_PACKETS, MAX_ACKS}]
+int8_t receive_data_from_sender(const int32_t sockfd, struct sockaddr_in *receiver_addr, socklen_t receiver_len, packet_t *window, int64_t *size_received, FILE *file) {
+    int64_t n;
+    bool is_first = true;
+    int32_t seq_num;
+    int64_t no_bytes_to_send;
+    int32_t no_packets_to_receive = 0;
+    
+#ifdef IS_CLIENT
+    printf("\n");
+#endif
+
+    uint32_t i = 0;
+
+    do {
+        packet_t new_packet = { 0 };
+    
+    retry:
+        n = recvfrom(sockfd, &new_packet, sizeof(new_packet), 0, (struct sockaddr *) receiver_addr, &receiver_len);
+        if (n < 0) { HANDLE_ERROR("recvfrom"); }
+
+        if (new_packet.seq_num == SEQ_NUM_ERROR) { return TRANSFER_ERROR; }
+
+        seq_num = new_packet.seq_num;
+        if (seq_num >= WINDOW_SIZE) {
+            ack_packet_t error_ack = { 0 };
+            error_ack.seq_num = SEQ_NUM_ERROR;
+            n = sendto(sockfd, &error_ack, sizeof(error_ack), 0, (struct sockaddr *) receiver_addr, receiver_len);
+            continue;
+        }
+        
+        no_bytes_to_send = new_packet.no_bytes_to_send;
+
+        // ? If it is the first packet, then set the number of packets to receive.
+        if (is_first) {
+            no_packets_to_receive = new_packet.no_packets_to_send;
+            is_first = !is_first;
+        }
+
+        // ? If the packet has been received then send an acknowledgment.
+        // ? In particular, if the packet has already been received,
+        // ? the size of the packet received is less than the size of
+        // ? the packet to receive, or the number of bytes to send is
+        // ? less than or equal to the size received, then send an
+        // ? acknowledgment.
+        if (window[seq_num].received || (*size_received < window[seq_num].no_bytes_to_send) || (no_bytes_to_send <= *size_received)) {
+            ack_packet_t ack = { 0 };
+            ack.seq_num = seq_num;
+            ack.size = no_bytes_to_send;
+            ack.write_byte = *size_received;
+            
+            // ? Simulate the packet loss.
+            if (can_send_packet()) {
+                n = sendto(sockfd, &ack, sizeof(ack), 0, (struct sockaddr *) receiver_addr, receiver_len);
+                if (n < 0) { HANDLE_ERROR("sendto"); }
+            }
+
+            goto retry;
+        }
+
+        // ? If the packet has not been received, then store it in the window.
+        window[seq_num] = new_packet;
+        window[seq_num].received = true;
+
+        // ? Process all available contiguous packets.
+        int32_t process_count = 0;
+        int32_t max_iterations = WINDOW_SIZE;
+
+        while (window[i].received && process_count++ < max_iterations) {
+            packet_t packet = window[i];
+            
+            *size_received = packet.no_bytes_to_send;
+            int64_t num_write = fwrite(&packet.payload, 1, packet.size, file);
+            if (num_write != packet.size) {
+                HANDLE_ERROR("fwrite");
+                return WRITE_BYTE_ERROR;
+            }
+
+        #ifdef IS_CLIENT
+            static uint32_t packets_processed = 0;
+            packets_processed++;
+            print_progress(no_packets_to_receive + packets_processed, packets_processed);
+        #endif
+        
+            no_packets_to_receive--;
+            window[i].received = false;
+            window[i].ack = false;
+            i = (i + 1) % WINDOW_SIZE;
+        }
+
+        ack_packet_t ack = { 0 };
+        ack.seq_num = seq_num;
+        ack.size = no_bytes_to_send;
+        ack.write_byte = *size_received;
+        
+        if (can_send_packet()) { // ? Check if the packet is lost.
+            n = sendto(sockfd, &ack, sizeof(ack), 0, (struct sockaddr *) receiver_addr, receiver_len);
+            if (n < 0) { HANDLE_ERROR("sendto"); }
+            window[seq_num].ack = true;
+        }
+    
+    } while (no_packets_to_receive > 0);
+
+    return EXIT_SUCCESS;
+}
+\end{lstlisting}
+
+\section{Limitazioni riscontrate \emoji{prohibited}}
+Durante lo sviluppo del progetto sono state riscontrate due principali limitazioni legate al calcolo del tempo di trasferimento e alla gestione dei timeout.
+
+\subsection{Calcolo del tempo di trasferimento \emoji{hourglass-done}}
+Per il calcolo del tempo di trasferimento è stata utilizzata la funzione \lstinlinebg{gettimeofday()}.
+La scelta di utilizzare tale funzione per misurare il tempo totale di trasferimento anziché la nota formula:
+\begin{eqnarray}
+    \text{EstimatedRTT} = (1 - \alpha) \cdot \text{EstimatedRTT} + \alpha \cdot \text{SampleRTT} \nonumber
+\end{eqnarray}
+è dovuta alla semplicità e immediatezza, a discapito della precisione.
+Questo approccio calcola il tempo effettivo trascorso tra l'inizio e la fine della trasmissione, senza adattarsi alle fluttuazioni di rete.
+
+\subsection{Timeout sulla socket anziché sui singoli pacchetti \emoji{stopwatch}}
+Nell'implementazione viene impostato un timeout a livello di socket e non sui singoli pacchetti, come il protocollo \textit{Selective Repeat} prevede.
+Questo significa che l'intera socket ``scade" se non riceve dati entro un certo periodo, anziché gestire timer individuali per ogni pacchetto.
+Questo approccio è stato scelto per la sua semplicità e per evitare la complessità aggiuntiva di gestire timer per ogni pacchetto.
