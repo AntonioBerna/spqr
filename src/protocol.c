@@ -170,7 +170,7 @@ int8_t main_receiver(const int32_t sockfd, struct sockaddr_in *receiver_addr, co
 	}
 	
 	// ? Send the last acknowledgment to the sender.
-    for (int i = 0; i < MAX_RETRIES; ++i) {
+    for (int32_t i = 0; i < MAX_RETRIES; ++i) {
         ack_packet_t ack = { 0 };
         ack.seq_num = SEQ_NUM_ERROR;
         ack.write_byte = size_received;
