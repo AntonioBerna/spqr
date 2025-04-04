@@ -4,22 +4,6 @@ In questo capitolo saranno illustrate nel dettaglio le scelte progettuali, con p
 Attraverso un'analisi strutturata, verranno presentati i componenti fondamentali del sistema, con particolare attenzione agli aspetti critici che ne garantiscono l'efficienza e l'affidabilità.
 Infine saranno analizzate le limitazioni riscontrate durante lo sviluppo.
 
-% Three-Way Handshake:
-% - client_open_connection_with_server (Three way handshake apertura)
-% - client_close_connection_with_server (Three way handshake chiusura)
-% - server_open_connection_with_client (Three way handshake apertura)
-% - server_close_connection_with_client (Three way handshake chiusura)
-% - send_packet / receive_packet
-
-% SELECTIVE REPEAT:
-% - init_packet_loss_simulator
-% - can_send_packet
-% - receive_data_from_sender
-% - main_receiver
-% - send_data_to_receiver
-% - wait_ack
-% - main_sender
-
 \section{Implementazione del server}
 Il server è il cuore del sistema, responsabile della gestione delle connessioni con i client, dell'elaborazione dei comandi e del trasferimento dei file.
 Di seguito viene riportato il codice sorgente del server attraverso il quale seguirà una spiegazione dettagliata delle funzioni principali.
